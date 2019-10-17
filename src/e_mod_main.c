@@ -267,6 +267,7 @@ _cmd_output_cb(void *data, int type, void *event)
         n.replaces_id = inst->notif_id;
         n.icon.icon_path = buf_icon;
         n.body = output_buf;
+        n.summary = "Decryption";
         n.urgency = E_NOTIFICATION_NOTIFY_URGENCY_CRITICAL;
         e_notification_client_send(&n, _notification_id_update, inst);
      }
