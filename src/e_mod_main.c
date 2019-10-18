@@ -20,6 +20,8 @@
 
 #define _EET_ENTRY "config"
 
+#define DEFAULT_DECRYPT_CMD "encfs -S %ENC_DIR% %MOUNT_POINT%"
+
 typedef struct
 {
    E_Gadcon_Client *gcc;
@@ -50,6 +52,7 @@ typedef struct
 {
    Eina_Stringshare *script_cmd;
    Eina_Stringshare *gui_cmd;
+   Eina_Stringshare *decrypt_cmd;
    Eina_List *directories; /* List of Dir_Info */
 } Config;
 
@@ -145,6 +148,7 @@ _config_eet_load()
    _config_edd = eet_data_descriptor_stream_new(&eddc);
    EET_DATA_DESCRIPTOR_ADD_BASIC(_config_edd, Config, "script_cmd", script_cmd, EET_T_STRING);
    EET_DATA_DESCRIPTOR_ADD_BASIC(_config_edd, Config, "gui_cmd", gui_cmd, EET_T_STRING);
+   EET_DATA_DESCRIPTOR_ADD_BASIC(_config_edd, Config, "decrypt_cmd", decrypt_cmd, EET_T_STRING);
    EET_DATA_DESCRIPTOR_ADD_LIST(_config_edd, Config, "directories", directories, dir_edd);
 }
 
@@ -215,6 +219,7 @@ _config_init(Instance *inst)
         _config = calloc(1, sizeof(Config));
         _config->script_cmd = NULL;
         _config->gui_cmd = eina_stringshare_add("zenity --password");
+        _config->decrypt_cmd = eina_stringshare_add(DEFAULT_DECRYPT_CMD);
         _config->directories = eina_list_append(_config->directories, dir);
         _config_save();
      }
@@ -223,6 +228,8 @@ _config_init(Instance *inst)
         _config = eet_data_read(file, _config_edd, _EET_ENTRY);
         eet_close(file);
      }
+
+   if (_config->decrypt_cmd == NULL) _config->decrypt_cmd = DEFAULT_DECRYPT_CMD;
 
    EINA_LIST_FOREACH(_config->directories, itr, dir)
      {
@@ -269,6 +276,7 @@ _config_shutdown()
      }
    eina_stringshare_del(_config->script_cmd);
    eina_stringshare_del(_config->gui_cmd);
+   eina_stringshare_del(_config->decrypt_cmd);
    free(_config);
    _config = NULL;
 }
@@ -284,19 +292,24 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
    if (!exe) return ECORE_CALLBACK_PASS_ON;
    if (exe == inst->gui_cmd_exe || exe == inst->script_cmd_exe)
      {
+        Eina_Strbuf *sbuf = eina_strbuf_new();
         if (exe == inst->gui_cmd_exe) inst->gui_cmd_exe = NULL;
         if (exe == inst->script_cmd_exe) inst->script_cmd_exe = NULL;
         EINA_LIST_FOREACH(_config->directories, itr, dir)
           {
-             char cmd[1024];
              if (dir->monitor) continue;
+             eina_strbuf_append(sbuf, _config->decrypt_cmd);
+             eina_strbuf_replace_all(sbuf, "%ENC_DIR%", dir->enc_dir);
+             eina_strbuf_replace_all(sbuf, "%MOUNT_POINT%", dir->mount_point);
+
              NOTIFY("Mounting %s\n", dir->mount_point);
-             sprintf(cmd, "encfs -S %s %s", dir->enc_dir, dir->mount_point);
-             exe = ecore_exe_pipe_run(cmd,
+             exe = ecore_exe_pipe_run(eina_strbuf_string_get(sbuf),
                    ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_WRITE | ECORE_EXE_PIPE_ERROR, inst);
              ecore_exe_send(exe, inst->passwd, strlen(inst->passwd));
              inst->decrypt_exes = eina_list_append(inst->decrypt_exes, exe);
+             eina_strbuf_reset(sbuf);
           }
+        eina_strbuf_free(sbuf);
      }
 
    if (eina_list_data_find(inst->decrypt_exes, exe))
