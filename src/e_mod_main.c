@@ -14,6 +14,7 @@
 #include <Eina.h>
 #include <Ecore.h>
 #include <Ecore_Con.h>
+#include <Eeze.h>
 
 #include "e_mod_main.h"
 
@@ -30,7 +31,9 @@ typedef struct
    Eina_Stringshare *passwd;
    Ecore_Exe *gui_cmd_exe;
    Ecore_Exe *script_cmd_exe;
-   Eina_List *mount_exes;
+   Ecore_Exe *mount_exe;
+   Eina_Strbuf* mount_sbuf;
+   Eina_List *decrypt_exes;
 
    unsigned int notif_id;
 } Instance;
@@ -41,6 +44,7 @@ typedef struct
 {
    Eina_Stringshare *enc_dir;
    Eina_Stringshare *mount_point;
+   Ecore_File_Monitor *monitor;
 } Dir_Info;
 
 typedef struct
@@ -140,16 +144,34 @@ _mkdir(const char *dir)
 }
 
 static void
-_config_init()
+_dir_changed(void *data,
+      Ecore_File_Monitor *em EINA_UNUSED,
+      Ecore_File_Event event EINA_UNUSED, const char *_path EINA_UNUSED)
+{
+   Instance *inst = data;
+   (void)inst;
+   PRINT("MOUNT\n");
+   if (!inst->mount_exe)
+     {
+        inst->mount_exe = ecore_exe_pipe_run("mount",
+              ECORE_EXE_PIPE_READ, inst);
+     }
+}
+
+static void
+_config_init(Instance *inst)
 {
    char path[1024];
    Dir_Info *dir;
+   Eina_List *itr;
+   const char *home = eina_environment_home_get();
+   const char *cfg_dir = efreet_config_home_get();
 
-   sprintf(path, "%s/e_decrypt", efreet_config_home_get());
+   sprintf(path, "%s/e_decrypt", cfg_dir);
    if (!_mkdir(path)) return;
 
    _config_eet_load();
-   sprintf(path, "%s/e_decrypt/config", efreet_config_home_get());
+   sprintf(path, "%s/e_decrypt/config", cfg_dir);
    Eet_File *file = eet_open(path, EET_FILE_MODE_READ);
    if (!file)
      {
@@ -157,7 +179,7 @@ _config_init()
         dir = calloc(1, sizeof(*dir));
 
         dir->enc_dir = eina_stringshare_add("example_enc_dir");
-        dir->mount_point = eina_stringshare_add("example_mount_point");
+        dir->mount_point = eina_stringshare_add("");
 
         _config = calloc(1, sizeof(Config));
         _config->script_cmd = NULL;
@@ -170,6 +192,38 @@ _config_init()
         _config = eet_data_read(file, _config_edd, _EET_ENTRY);
         eet_close(file);
      }
+
+   EINA_LIST_FOREACH(_config->directories, itr, dir)
+     {
+        const char *mpt = dir->mount_point;
+        if (dir->enc_dir && strchr(dir->enc_dir, '~'))
+          {
+             Eina_Strbuf *sbuf = eina_strbuf_new();
+             eina_strbuf_append(sbuf, dir->enc_dir);
+             eina_strbuf_replace_first(sbuf, "~", home);
+             eina_stringshare_replace(&dir->enc_dir, eina_strbuf_string_get(sbuf));
+             eina_strbuf_free(sbuf);
+          }
+        if (mpt && *mpt)
+          {
+             char *end = (char *)mpt + strlen(mpt) - 1;
+             while (*end == '/')
+               {
+                  *end = '\0';
+                  end--;
+               }
+             if (strchr(mpt, '~'))
+               {
+                  Eina_Strbuf *sbuf = eina_strbuf_new();
+                  eina_strbuf_append(sbuf, mpt);
+                  eina_strbuf_replace_first(sbuf, "~", home);
+                  eina_stringshare_replace(&dir->mount_point, eina_strbuf_string_get(sbuf));
+                  eina_strbuf_free(sbuf);
+               }
+          }
+     }
+   if (!inst->mount_exe)
+      inst->mount_exe = ecore_exe_pipe_run("mount", ECORE_EXE_PIPE_READ, inst);
 }
 
 static void
@@ -191,14 +245,14 @@ _config_shutdown()
 static Eina_Bool
 _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
 {
+   Eina_List *itr;
+   Dir_Info *dir;
    Instance *inst = data;
    Ecore_Exe_Event_Del *event_info = (Ecore_Exe_Event_Del *)event;
    Ecore_Exe *exe = event_info->exe;
    if (!exe) return ECORE_CALLBACK_PASS_ON;
    if (exe == inst->gui_cmd_exe || exe == inst->script_cmd_exe)
      {
-        Eina_List *itr;
-        Dir_Info *dir;
         if (exe == inst->gui_cmd_exe) inst->gui_cmd_exe = NULL;
         if (exe == inst->script_cmd_exe) inst->script_cmd_exe = NULL;
         EINA_LIST_FOREACH(_config->directories, itr, dir)
@@ -208,15 +262,48 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
              exe = ecore_exe_pipe_run(cmd,
                    ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_WRITE | ECORE_EXE_PIPE_ERROR, inst);
              ecore_exe_send(exe, inst->passwd, strlen(inst->passwd));
-             inst->mount_exes = eina_list_append(inst->mount_exes, exe);
+             inst->decrypt_exes = eina_list_append(inst->decrypt_exes, exe);
           }
-        //e_gadcon_client_hide(inst->gcc);
      }
 
-   List_Remove_Timer_Data *td = malloc(sizeof(*td));
-   td->pList = &inst->mount_exes;
-   td->data = exe;
-   ecore_timer_add(2.0, _data_remove_from_list, td);
+   if (eina_list_data_find(inst->decrypt_exes, exe))
+     {
+        List_Remove_Timer_Data *td = malloc(sizeof(*td));
+        td->pList = &inst->decrypt_exes;
+        td->data = exe;
+        ecore_timer_add(2.0, _data_remove_from_list, td);
+     }
+
+   if (exe == inst->mount_exe)
+     {
+        Eina_Bool show_icon = EINA_FALSE;
+        const char *buf = eina_strbuf_string_get(inst->mount_sbuf);
+        if (buf) printf("%s", buf);
+        EINA_LIST_FOREACH(_config->directories, itr, dir)
+          {
+             char str[1024];
+             if (!dir->mount_point) continue;
+             sprintf(str, "encfs on %s", dir->mount_point);
+             if (!strstr(buf, str))
+               {
+                  PRINT("MONITOR del %s\n", dir->mount_point);
+                  show_icon = EINA_TRUE;
+                  if (dir->monitor) ecore_file_monitor_del(dir->monitor);
+                  dir->monitor = NULL;
+               }
+             else
+               {
+                  PRINT("MONITOR add %s\n", dir->mount_point);
+                  dir->monitor = ecore_file_monitor_add(dir->mount_point,
+                        _dir_changed, inst);
+               }
+          }
+        eina_strbuf_free(inst->mount_sbuf);
+        inst->mount_sbuf = NULL;
+        inst->mount_exe = NULL;
+        if (show_icon) e_gadcon_client_show(inst->gcc);
+        else e_gadcon_client_hide(inst->gcc);
+     }
 
    return ECORE_CALLBACK_DONE;
 }
@@ -245,11 +332,10 @@ _cmd_output_cb(void *data, int type, void *event)
      {
         eina_stringshare_del(inst->passwd);
         inst->passwd = eina_stringshare_add_length(event_data->data, event_data->size);
-        PRINT("PASSWD %s\n", inst->passwd);
         return ECORE_CALLBACK_PASS_ON;
      }
 
-   if (eina_list_data_find(inst->mount_exes, exe))
+   if (eina_list_data_find(inst->decrypt_exes, exe))
      {
         const char *begin = event_data->data;
 
@@ -270,6 +356,15 @@ _cmd_output_cb(void *data, int type, void *event)
         n.summary = "Decryption";
         n.urgency = E_NOTIFICATION_NOTIFY_URGENCY_CRITICAL;
         e_notification_client_send(&n, _notification_id_update, inst);
+     }
+
+   if (exe == inst->mount_exe)
+     {
+        if (!inst->mount_sbuf)
+          {
+             inst->mount_sbuf = eina_strbuf_new();
+             eina_strbuf_append_length(inst->mount_sbuf, event_data->data, event_data->size);
+          }
      }
 
    return ECORE_CALLBACK_DONE;
@@ -330,6 +425,15 @@ _button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNU
      }
 }
 
+static void
+_udev_added_cb(const char *dev_name EINA_UNUSED, Eeze_Udev_Event event EINA_UNUSED,
+             void *data, Eeze_Udev_Watch *watch EINA_UNUSED)
+{
+   Instance *inst = data;
+   if (inst->mount_exe) return;
+   inst->mount_exe = ecore_exe_pipe_run("mount", ECORE_EXE_PIPE_READ, inst);
+}
+
 static E_Gadcon_Client *
 _gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
 {
@@ -338,7 +442,7 @@ _gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
    char buf[4096];
 
    inst = _instance_create();
-   _config_init();
+   _config_init(inst);
 
    snprintf(buf, sizeof(buf), "%s/icon.png", e_module_dir_get(_module));
 
@@ -350,6 +454,8 @@ _gc_init(E_Gadcon *gc, const char *name, const char *id, const char *style)
 
    evas_object_event_callback_add(inst->o_icon, EVAS_CALLBACK_MOUSE_DOWN,
 				  _button_cb_mouse_down, inst);
+
+   eeze_udev_watch_add(EEZE_UDEV_TYPE_NONE, EEZE_UDEV_EVENT_ADD, _udev_added_cb, inst);
 
    inst->exe_data_hdl = ecore_event_handler_add(ECORE_EXE_EVENT_DATA, _cmd_output_cb, inst);
    inst->exe_error_hdl = ecore_event_handler_add(ECORE_EXE_EVENT_ERROR, _cmd_output_cb, inst);
@@ -423,6 +529,7 @@ e_modapi_init(E_Module *m)
    ecore_con_init();
    ecore_con_url_init();
    efreet_init();
+   eeze_init();
 
    _module = m;
    e_gadcon_provider_register(&_gc_class);
@@ -436,6 +543,7 @@ e_modapi_shutdown(E_Module *m EINA_UNUSED)
    e_gadcon_provider_unregister(&_gc_class);
 
    _module = NULL;
+   eeze_shutdown();
    efreet_shutdown();
    ecore_con_url_shutdown();
    ecore_con_shutdown();
