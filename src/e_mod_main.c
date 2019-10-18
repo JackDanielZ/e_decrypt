@@ -34,11 +34,10 @@ typedef struct
    Ecore_Exe *mount_exe;
    Eina_Strbuf* mount_sbuf;
    Eina_List *decrypt_exes;
-
-   unsigned int notif_id;
 } Instance;
 
 #define PRINT _printf
+#define NOTIFY _notify
 
 typedef struct
 {
@@ -63,6 +62,8 @@ typedef struct
 static E_Module *_module = NULL;
 static Config *_config = NULL;
 static Eet_Data_Descriptor *_config_edd = NULL;
+
+static unsigned int _notif_id;
 
 static Eina_Bool
 _data_remove_from_list(void *data)
@@ -96,6 +97,36 @@ _printf(const char *fmt, ...)
    fflush(fp);
 
    return printed;
+}
+
+static void
+_notification_id_update(void *d EINA_UNUSED, unsigned int id)
+{
+   _notif_id = id;
+}
+
+static void
+_notify(const char *fmt, ...)
+{
+   char buf_icon[1024];
+   E_Notification_Notify n;
+   char printf_buf[1024];
+   va_list args;
+
+   va_start(args, fmt);
+   vsprintf(printf_buf, fmt, args);
+   va_end(args);
+
+   snprintf(buf_icon, sizeof(buf_icon), "%s/icon.png", e_module_dir_get(_module));
+   memset(&n, 0, sizeof(E_Notification_Notify));
+   n.app_name = "e_decrypt";
+   n.timeout = 3000;
+   n.replaces_id = _notif_id;
+   n.icon.icon_path = buf_icon;
+   n.body = printf_buf;
+   n.summary = "Decryption";
+   n.urgency = E_NOTIFICATION_NOTIFY_URGENCY_CRITICAL;
+   e_notification_client_send(&n, _notification_id_update, NULL);
 }
 
 static void
@@ -259,7 +290,7 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
           {
              char cmd[1024];
              if (dir->monitor) continue;
-             PRINT("Mounting %s\n", dir->mount_point);
+             NOTIFY("Mounting %s\n", dir->mount_point);
              sprintf(cmd, "encfs -S %s %s", dir->enc_dir, dir->mount_point);
              exe = ecore_exe_pipe_run(cmd,
                    ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_WRITE | ECORE_EXE_PIPE_ERROR, inst);
@@ -316,19 +347,9 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
    return ECORE_CALLBACK_DONE;
 }
 
-static void
-_notification_id_update(void *d, unsigned int id)
-{
-   Instance *inst = d;
-
-   inst->notif_id = id;
-}
-
 static Eina_Bool
 _cmd_output_cb(void *data, int type, void *event)
 {
-   E_Notification_Notify n;
-   char buf_icon[1024];
    char output_buf[10024];
    Instance *inst = data;
    Ecore_Exe_Event_Data *event_data = (Ecore_Exe_Event_Data *)event;
@@ -347,7 +368,6 @@ _cmd_output_cb(void *data, int type, void *event)
      {
         const char *begin = event_data->data;
 
-        snprintf(buf_icon, sizeof(buf_icon), "%s/icon.png", e_module_dir_get(_module));
         PRINT(begin);
 
         if (type == ECORE_EXE_EVENT_ERROR)
@@ -355,15 +375,7 @@ _cmd_output_cb(void *data, int type, void *event)
         else
            sprintf(output_buf, "<color=#0F0>%*s</color>", event_data->size, begin);
 
-        memset(&n, 0, sizeof(E_Notification_Notify));
-        n.app_name = "e_decrypt";
-        n.timeout = 3000;
-        n.replaces_id = inst->notif_id;
-        n.icon.icon_path = buf_icon;
-        n.body = output_buf;
-        n.summary = "Decryption";
-        n.urgency = E_NOTIFICATION_NOTIFY_URGENCY_CRITICAL;
-        e_notification_client_send(&n, _notification_id_update, inst);
+        NOTIFY(output_buf);
      }
 
    if (exe == inst->mount_exe)
@@ -429,7 +441,6 @@ _button_cb_mouse_down(void *data, Evas *e EINA_UNUSED, Evas_Object *obj EINA_UNU
      {
         inst->gui_cmd_exe = ecore_exe_pipe_run(_config->gui_cmd,
               ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_ERROR, inst);
-        PRINT("GUI EXE BEGIN %p\n", inst->gui_cmd_exe);
      }
 }
 
