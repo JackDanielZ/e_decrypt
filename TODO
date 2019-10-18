@@ -1,3 +1,2 @@
-- Mount only those which are not mounted yet
 - Add to config decrypt_cmd (%ENC_DIR% %MOUNT_POINT%) with default of enc_fs without allow_other
 - Add NOTIFY parallel of PRINT

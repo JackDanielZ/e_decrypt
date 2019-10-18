@@ -258,6 +258,8 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
         EINA_LIST_FOREACH(_config->directories, itr, dir)
           {
              char cmd[1024];
+             if (dir->monitor) continue;
+             PRINT("Mounting %s\n", dir->mount_point);
              sprintf(cmd, "encfs -S %s %s", dir->enc_dir, dir->mount_point);
              exe = ecore_exe_pipe_run(cmd,
                    ECORE_EXE_PIPE_READ | ECORE_EXE_PIPE_WRITE | ECORE_EXE_PIPE_ERROR, inst);
@@ -286,16 +288,22 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
              sprintf(str, "encfs on %s", dir->mount_point);
              if (!strstr(buf, str))
                {
-                  PRINT("MONITOR del %s\n", dir->mount_point);
                   show_icon = EINA_TRUE;
-                  if (dir->monitor) ecore_file_monitor_del(dir->monitor);
+                  if (dir->monitor)
+                    {
+                       ecore_file_monitor_del(dir->monitor);
+                       PRINT("MONITOR del %s\n", dir->mount_point);
+                    }
                   dir->monitor = NULL;
                }
              else
                {
-                  PRINT("MONITOR add %s\n", dir->mount_point);
-                  dir->monitor = ecore_file_monitor_add(dir->mount_point,
-                        _dir_changed, inst);
+                  if (!dir->monitor)
+                    {
+                       PRINT("MONITOR add %s\n", dir->mount_point);
+                       dir->monitor = ecore_file_monitor_add(dir->mount_point,
+                             _dir_changed, inst);
+                    }
                }
           }
         eina_strbuf_free(inst->mount_sbuf);
