@@ -310,6 +310,7 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
              eina_strbuf_reset(sbuf);
           }
         eina_strbuf_free(sbuf);
+        return ECORE_CALLBACK_DONE;
      }
 
    if (eina_list_data_find(inst->decrypt_exes, exe))
@@ -318,6 +319,7 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
         td->pList = &inst->decrypt_exes;
         td->data = exe;
         ecore_timer_add(2.0, _data_remove_from_list, td);
+        return ECORE_CALLBACK_DONE;
      }
 
    if (exe == inst->mount_exe)
@@ -355,9 +357,10 @@ _cmd_end_cb(void *data, int type EINA_UNUSED, void *event)
         inst->mount_exe = NULL;
         if (show_icon) e_gadcon_client_show(inst->gcc);
         else e_gadcon_client_hide(inst->gcc);
+        return ECORE_CALLBACK_DONE;
      }
 
-   return ECORE_CALLBACK_DONE;
+   return ECORE_CALLBACK_PASS_ON;
 }
 
 static Eina_Bool
@@ -368,13 +371,14 @@ _cmd_output_cb(void *data, int type, void *event)
    Ecore_Exe_Event_Data *event_data = (Ecore_Exe_Event_Data *)event;
    Ecore_Exe *exe = event_data->exe;
 
+   if (!exe) return ECORE_CALLBACK_PASS_ON;
    /* Get password from script or GUI */
    if (type == ECORE_EXE_EVENT_DATA &&
          (exe == inst->gui_cmd_exe || exe == inst->script_cmd_exe))
      {
         eina_stringshare_del(inst->passwd);
         inst->passwd = eina_stringshare_add_length(event_data->data, event_data->size);
-        return ECORE_CALLBACK_PASS_ON;
+        return ECORE_CALLBACK_DONE;
      }
 
    if (eina_list_data_find(inst->decrypt_exes, exe))
@@ -389,6 +393,7 @@ _cmd_output_cb(void *data, int type, void *event)
            sprintf(output_buf, "<color=#0F0>%*s</color>", event_data->size, begin);
 
         NOTIFY(output_buf);
+        return ECORE_CALLBACK_DONE;
      }
 
    if (exe == inst->mount_exe)
@@ -396,11 +401,12 @@ _cmd_output_cb(void *data, int type, void *event)
         if (!inst->mount_sbuf)
           {
              inst->mount_sbuf = eina_strbuf_new();
-             eina_strbuf_append_length(inst->mount_sbuf, event_data->data, event_data->size);
           }
+        eina_strbuf_append_length(inst->mount_sbuf, event_data->data, event_data->size);
+        return ECORE_CALLBACK_DONE;
      }
 
-   return ECORE_CALLBACK_DONE;
+   return ECORE_CALLBACK_PASS_ON;
 }
 
 static Eo *
